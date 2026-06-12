@@ -1,5 +1,7 @@
 # 🚴 Grand Cycling Tours – Home Assistant Integration
 
+![Grand Cycling Tours Banner](https://raw.githubusercontent.com/molle1996/ha-grand-cycling-tours/main/banner.jpg)
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
 [![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=molle1996&repository=ha-grand-cycling-tours&category=integration)
