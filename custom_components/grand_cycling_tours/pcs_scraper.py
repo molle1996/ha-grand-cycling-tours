@@ -92,6 +92,11 @@ async def get_race_data(
     date_el = soup.find("div", class_="date") or soup.find("span", class_="date")
     data["race_dates"] = _text(date_el)
 
+    # Stage list — must be parsed first so we can derive dates from it
+    stages = _parse_stages(soup)
+    data["stages"] = stages
+    data["total_stages"] = len(stages)
+
     # Derive race start/end from stage dates — no hardcoding needed
     race_start, race_end = _dates_from_stages(stages)
     # Fall back to scraping the page header if stage dates are missing
@@ -99,11 +104,6 @@ async def get_race_data(
         race_start, race_end = _parse_race_dates(soup, data["race_dates"])
     data["race_start"] = race_start.isoformat() if race_start else ""
     data["race_end"] = race_end.isoformat() if race_end else ""
-
-    # Stage list
-    stages = _parse_stages(soup)
-    data["stages"] = stages
-    data["total_stages"] = len(stages)
 
     # Status based on dates (more reliable than winner detection)
     today = date.today()
