@@ -75,7 +75,17 @@ def _text(el) -> str:
 async def get_race_data(
     session: aiohttp.ClientSession, race_slug: str, year: int
 ) -> dict[str, Any]:
-    """Fetch and parse the main race page."""
+    """
+    Fetch race data from two PCS pages:
+    1. /race/<slug>/statistics — for reliable status & next race date
+    2. /race/<slug>/<year> — for stages, GC, jerseys, winners
+    """
+    # --- Fetch statistics page for authoritative status info ---
+    stats_url = f"{PCS_BASE}/race/{race_slug}/statistics"
+    stats_html = await fetch_html(session, stats_url)
+    stats_info = _parse_statistics_page(stats_html, year) if stats_html else {}
+
+    # --- Fetch the year-specific race page ---
     url = f"{PCS_BASE}/race/{race_slug}/{year}"
     html = await fetch_html(session, url)
     if not html:
@@ -88,33 +98,60 @@ async def get_race_data(
     title_el = soup.find("h1")
     data["race_name"] = _text(title_el)
 
-    # Race dates string
+    # Race dates string from race page
     date_el = soup.find("div", class_="date") or soup.find("span", class_="date")
     data["race_dates"] = _text(date_el)
 
-    # Stage list — must be parsed first so we can derive dates from it
+    # Stage list
     stages = _parse_stages(soup)
     data["stages"] = stages
     data["total_stages"] = len(stages)
 
-    # Derive race start/end from stage dates — no hardcoding needed
-    race_start, race_end = _dates_from_stages(stages)
-    # Fall back to scraping the page header if stage dates are missing
-    if not race_start or not race_end:
+    # --- Determine race dates: prefer statistics page, fall back to stages ---
+    race_start = stats_info.get("next_race_date")  # only set if upcoming
+    race_end = None
+
+    if not race_start:
+        # Race is in the past or currently running — derive from stages
+        race_start, race_end = _dates_from_stages(stages)
+
+    if not race_start:
+        # Last fallback: scrape header string
         race_start, race_end = _parse_race_dates(soup, data["race_dates"])
+
+    # If we have start but no end, derive end from stage list
+    if race_start and not race_end:
+        _, race_end = _dates_from_stages(stages)
+
     data["race_start"] = race_start.isoformat() if race_start else ""
     data["race_end"] = race_end.isoformat() if race_end else ""
 
-    # Status based on dates (more reliable than winner detection)
+    # --- Status: statistics page is authoritative ---
     today = date.today()
-    status, current_stage, next_stage = _determine_status(
-        stages, today, race_start, race_end
-    )
+    status = _determine_status_from_stats(stats_info, year, today, race_start, race_end)
+
+    # Set current/next stage based on resolved status
+    if status == "not_started":
+        current_stage = {}
+        next_stage = stages[0] if stages else {}
+    elif status == "finished":
+        current_stage = stages[-1] if stages else {}
+        next_stage = {}
+    elif status == "live":
+        completed = [s for s in stages if s.get("completed")]
+        upcoming = [s for s in stages if not s.get("completed")]
+        current_stage = completed[-1] if completed else {}
+        next_stage = upcoming[0] if upcoming else {}
+    else:
+        current_stage, next_stage = {}, {}
+
     data["status"] = status
     data["current_stage"] = current_stage
     data["next_stage"] = next_stage
+    data["days_until_start"] = stats_info.get("days_until_start", "")
+    data["last_year_winner"] = stats_info.get("last_year_winner", "")
 
-    # GC standings — show for live and finished races
+    # --- GC standings — show for live and finished races ---
     if status in ("live", "finished"):
         gc = _parse_gc(soup)
     else:
@@ -122,13 +159,13 @@ async def get_race_data(
     data["gc"] = gc
     data["gc_leader"] = gc[0] if gc else {}
 
-    # Jersey leaders — show for live and finished races
+    # --- Jersey leaders — show for live and finished races ---
     if status in ("live", "finished"):
         data["jerseys"] = _parse_jerseys(soup, race_slug)
     else:
         data["jerseys"] = {"points": "", "mountain": "", "youth": ""}
 
-    # Last completed stage winner
+    # --- Last completed stage winner ---
     last_stage = _last_completed_stage(stages)
     if last_stage:
         winner = last_stage.get("winner", "")
@@ -144,6 +181,128 @@ async def get_race_data(
         data["last_stage_name"] = ""
 
     return data
+
+
+# ---------------------------------------------------------------------------
+# Statistics page parsing — authoritative source for race status
+# ---------------------------------------------------------------------------
+
+def _parse_statistics_page(html: str, year: int) -> dict[str, Any]:
+    """
+    Parse the /race/<slug>/statistics page.
+    Returns:
+      - days_until_start: int or None (set when race is upcoming)
+      - next_race_date: date or None (precise start date when race is upcoming)
+      - last_winners: dict {year: winner_name}
+      - current_year_winner: name if this year already has a recorded winner
+      - last_year_winner: previous year's winner
+    """
+    result: dict[str, Any] = {
+        "days_until_start": None,
+        "next_race_date": None,
+        "last_winners": {},
+        "current_year_winner": "",
+        "last_year_winner": "",
+    }
+
+    soup = BeautifulSoup(html, "html.parser")
+    page_text = soup.get_text(" ", strip=True)
+
+    # --- "It is X days untill the start of [race] at Month Dth YYYY." ---
+    m = re.search(
+        r"(\d+)\s+days?\s+untill?\s+the\s+start\s+of[^.]*?at\s+"
+        r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(\d{4})",
+        page_text,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            result["days_until_start"] = int(m.group(1))
+            month_name = m.group(2)
+            day = int(m.group(3))
+            yr = int(m.group(4))
+            month = _month_name_to_num(month_name)
+            if month:
+                result["next_race_date"] = date(yr, month, day)
+        except ValueError:
+            pass
+
+    # --- "Last winners" section: parse year → winner pairs ---
+    # Look for the heading and then walk the following content
+    for header in soup.find_all(["h3", "h4", "b", "strong"]):
+        if "last winners" in _text(header).lower():
+            container = header.find_parent(["div", "td"]) or header.parent
+            if container:
+                # Find all year links and their associated winner text
+                text = container.get_text("\n", strip=True)
+                for line_match in re.finditer(
+                    r"(\d{4})\s+([A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ'\-\s]+?)(?=\s*\d{4}|\s*$)",
+                    text,
+                ):
+                    try:
+                        winner_year = int(line_match.group(1))
+                        winner_name = line_match.group(2).strip()
+                        # Filter out very short or empty names
+                        if winner_name and len(winner_name) > 2:
+                            result["last_winners"][winner_year] = winner_name
+                    except ValueError:
+                        continue
+            break
+
+    result["current_year_winner"] = result["last_winners"].get(year, "")
+    result["last_year_winner"] = result["last_winners"].get(year - 1, "")
+
+    return result
+
+
+def _month_name_to_num(name: str) -> int | None:
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    return months.get(name.lower())
+
+
+def _determine_status_from_stats(
+    stats_info: dict,
+    year: int,
+    today: date,
+    race_start: date | None,
+    race_end: date | None,
+) -> str:
+    """
+    Determine race status using statistics page info first.
+    Falls back to date-based logic.
+    """
+    # 1. Statistics page explicitly says race is upcoming
+    days_until = stats_info.get("days_until_start")
+    if days_until is not None and days_until > 0:
+        return "not_started"
+
+    # 2. Statistics page shows a winner for this year → finished
+    if stats_info.get("current_year_winner"):
+        return "finished"
+
+    # 3. Date-based fallback
+    if race_start and race_end:
+        if today < race_start:
+            return "not_started"
+        if today > race_end:
+            return "finished"
+        return "live"
+
+    # 4. If we know the start date but no end — derive
+    if race_start:
+        if today < race_start:
+            return "not_started"
+        # Assume Grand Tour is 3 weeks long
+        from datetime import timedelta
+        if today > race_start + timedelta(days=24):
+            return "finished"
+        return "live"
+
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
