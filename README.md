@@ -265,6 +265,7 @@ This integration is provided as-is for Home Assistant. Not affiliated with UCI, 
 - **Data Source:** [ProcyclingStats.com](https://www.procyclingstats.com)
 - **Built for:** [Home Assistant](https://www.home-assistant.io/)
 - **Inspired by:** Similar sports integrations for HA
+- **Icon:** <a href="https://www.flaticon.com/free-icons/tour-de-france" title="tour de france icons">Tour de france icons created by cube29 - Flaticon</a>
 
 ---
 
