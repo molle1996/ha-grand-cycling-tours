@@ -1,5 +1,9 @@
 # 🚴 Grand Cycling Tours – Home Assistant Integration
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=molle1996&repository=ha-grand-cycling-tours&category=integration)
+
 Live **Tour de France**, **Giro d'Italia**, and **Vuelta a España** tracking directly in Home Assistant. Monitor race status, general classification standings, jersey leaders, and stage results in real-time.
 
 Powered by [ProcyclingStats.com](https://www.procyclingstats.com) – no API key required!
@@ -41,11 +45,17 @@ Includes a full Lovelace dashboard template with glance cards, entity cards, and
 
 ### Via HACS (Recommended)
 
+Click the button below to open this repository directly in HACS:
+
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=molle1996&repository=ha-grand-cycling-tours&category=integration)
+
+Or add it manually:
+
 1. Open **HACS** in Home Assistant
 2. Click **Integrations**
 3. Click the **⋮** (three dots) menu
 4. Select **Custom repositories**
-5. Add repository URL: `https://github.com/yourusername/ha-grand-cycling-tours`
+5. Add repository URL: `https://github.com/molle1996/ha-grand-cycling-tours`
 6. Category: **Integration**
 7. Search for **Grand Cycling Tours** and install
 8. Restart Home Assistant
