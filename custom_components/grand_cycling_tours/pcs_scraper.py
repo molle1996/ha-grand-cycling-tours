@@ -27,9 +27,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; HomeAssistant/GrandCyclingTours/1.0)"
 }
 
-# ---------------------------------------------------------------------------
-# Per-race jersey section headings on PCS (used to isolate the right section)
-# ---------------------------------------------------------------------------
 RACE_JERSEY_HEADINGS = {
     "tour-de-france": {
         "points":   ["points classification", "green jersey"],
@@ -95,8 +92,11 @@ async def get_race_data(
     date_el = soup.find("div", class_="date") or soup.find("span", class_="date")
     data["race_dates"] = _text(date_el)
 
-    # Parse race start/end dates from the page for accurate status
-    race_start, race_end = _parse_race_dates(soup, data["race_dates"])
+    # Derive race start/end from stage dates — no hardcoding needed
+    race_start, race_end = _dates_from_stages(stages)
+    # Fall back to scraping the page header if stage dates are missing
+    if not race_start or not race_end:
+        race_start, race_end = _parse_race_dates(soup, data["race_dates"])
     data["race_start"] = race_start.isoformat() if race_start else ""
     data["race_end"] = race_end.isoformat() if race_end else ""
 
@@ -114,7 +114,7 @@ async def get_race_data(
     data["current_stage"] = current_stage
     data["next_stage"] = next_stage
 
-    # GC standings — only meaningful if race has started
+    # GC standings — show for live and finished races
     if status in ("live", "finished"):
         gc = _parse_gc(soup)
     else:
@@ -122,7 +122,7 @@ async def get_race_data(
     data["gc"] = gc
     data["gc_leader"] = gc[0] if gc else {}
 
-    # Jersey leaders — only meaningful if race has started
+    # Jersey leaders — show for live and finished races
     if status in ("live", "finished"):
         data["jerseys"] = _parse_jerseys(soup, race_slug)
     else:
@@ -147,18 +147,27 @@ async def get_race_data(
 
 
 # ---------------------------------------------------------------------------
-# Race date parsing
+# Race date resolution — derived from stage list (no hardcoding)
 # ---------------------------------------------------------------------------
+
+def _dates_from_stages(stages: list[dict]) -> tuple[date | None, date | None]:
+    """
+    Derive race start and end dates from the stage list.
+    Uses the date of the first and last stage — works for any year automatically.
+    """
+    dated = [s for s in stages if s.get("date")]
+    if not dated:
+        return None, None
+    return dated[0]["date"], dated[-1]["date"]
+
 
 def _parse_race_dates(soup: BeautifulSoup, dates_str: str) -> tuple[date | None, date | None]:
     """
-    Parse the race start and end dates.
-    PCS typically shows dates like "04.07 - 27.07 2026" or "04.07 – 27.07"
+    Fallback: parse race dates from the PCS page header string.
+    PCS typically shows e.g. '08.05 – 01.06 2026'.
     """
     year = date.today().year
 
-    # Try to extract from the dates string
-    # Pattern: DD.MM - DD.MM or DD.MM – DD.MM (with optional year)
     m = re.search(
         r"(\d{1,2})\.(\d{2})\s*[-–]\s*(\d{1,2})\.(\d{2})(?:\s+(\d{4}))?",
         dates_str
@@ -172,13 +181,9 @@ def _parse_race_dates(soup: BeautifulSoup, dates_str: str) -> tuple[date | None,
         except ValueError:
             pass
 
-    # Fallback: look for date elements on the page
     for el in soup.find_all(["span", "div"], class_=re.compile(r"date|period", re.I)):
         txt = _text(el)
-        m = re.search(
-            r"(\d{1,2})\.(\d{2})\s*[-–]\s*(\d{1,2})\.(\d{2})",
-            txt
-        )
+        m = re.search(r"(\d{1,2})\.(\d{2})\s*[-–]\s*(\d{1,2})\.(\d{2})", txt)
         if m:
             try:
                 start = date(year, int(m.group(2)), int(m.group(1)))
@@ -188,6 +193,7 @@ def _parse_race_dates(soup: BeautifulSoup, dates_str: str) -> tuple[date | None,
                 pass
 
     return None, None
+
 
 
 # ---------------------------------------------------------------------------
