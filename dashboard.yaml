@@ -1,0 +1,123 @@
+# Grand Cycling Tours – Example Dashboard
+# Add to your Lovelace via "Edit Dashboard" → "Edit as YAML"
+# or save as a new dashboard file.
+
+title: 🚴 Cycling
+views:
+  - title: Grand Tours
+    icon: mdi:bicycle
+    cards:
+
+      # ---------------------------------------------------------------
+      # TOUR DE FRANCE
+      # ---------------------------------------------------------------
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: "## 🟡 Tour de France"
+
+          - type: glance
+            title: Status
+            entities:
+              - entity: sensor.tour_de_france_race_status
+                name: Status
+                icon: mdi:flag-checkered
+              - entity: sensor.tour_de_france_stages_completed
+                name: Stages
+                icon: mdi:counter
+              - entity: sensor.tour_de_france_next_stage
+                name: Next Stage
+                icon: mdi:map-marker-path
+
+          - type: entities
+            title: Classifications
+            entities:
+              - entity: sensor.tour_de_france_gc_leader
+                name: 🟡 General (GC)
+              - entity: sensor.tour_de_france_points_jersey_leader
+                name: 🟢 Points Jersey
+              - entity: sensor.tour_de_france_mountain_jersey_leader
+                name: 🔵 Mountains Jersey
+              - entity: sensor.tour_de_france_youth_jersey_leader
+                name: ⚪ White Jersey (U25)
+              - entity: sensor.tour_de_france_last_stage_winner
+                name: 🏆 Last Stage Winner
+
+          - type: markdown
+            content: >
+              **Top 5 General Classification:**
+              {{ states('sensor.tour_de_france_gc_top_5') | replace(' | ', '\n') }}
+
+      # ---------------------------------------------------------------
+      # GIRO D'ITALIA
+      # ---------------------------------------------------------------
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: "## 🩷 Giro d'Italia"
+
+          - type: glance
+            title: Status
+            entities:
+              - entity: sensor.giro_d_italia_race_status
+                name: Status
+              - entity: sensor.giro_d_italia_stages_completed
+                name: Stages
+              - entity: sensor.giro_d_italia_next_stage
+                name: Next Stage
+
+          - type: entities
+            title: Classifications
+            entities:
+              - entity: sensor.giro_d_italia_gc_leader
+                name: 🩷 General (GC)
+              - entity: sensor.giro_d_italia_points_jersey_leader
+                name: 💜 Points Jersey
+              - entity: sensor.giro_d_italia_mountain_jersey_leader
+                name: 🔵 Mountains Jersey
+              - entity: sensor.giro_d_italia_youth_jersey_leader
+                name: ⚪ White Jersey
+              - entity: sensor.giro_d_italia_last_stage_winner
+                name: 🏆 Last Stage Winner
+
+          - type: markdown
+            content: >
+              **Top 5 General Classification:**
+              {{ states('sensor.giro_d_italia_gc_top_5') | replace(' | ', '\n') }}
+
+      # ---------------------------------------------------------------
+      # VUELTA A ESPAÑA
+      # ---------------------------------------------------------------
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: "## 🔴 Vuelta a España"
+
+          - type: glance
+            title: Status
+            entities:
+              - entity: sensor.vuelta_a_espana_race_status
+                name: Status
+              - entity: sensor.vuelta_a_espana_stages_completed
+                name: Stages
+              - entity: sensor.vuelta_a_espana_next_stage
+                name: Next Stage
+
+          - type: entities
+            title: Classifications
+            entities:
+              - entity: sensor.vuelta_a_espana_gc_leader
+                name: 🔴 General (GC)
+              - entity: sensor.vuelta_a_espana_points_jersey_leader
+                name: 🟢 Points Jersey
+              - entity: sensor.vuelta_a_espana_mountain_jersey_leader
+                name: 🔵 Mountains Jersey
+              - entity: sensor.vuelta_a_espana_youth_jersey_leader
+                name: ⚪ White Jersey
+              - entity: sensor.vuelta_a_espana_last_stage_winner
+                name: 🏆 Last Stage Winner
+
+          - type: markdown
+            content: >
+              **Top 5 General Classification:**
+              {{ states('sensor.vuelta_a_espana_gc_top_5') | replace(' | ', '\n') }}

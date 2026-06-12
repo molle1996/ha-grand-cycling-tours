@@ -1,0 +1,199 @@
+# Grand Cycling Tours – Example Automations
+
+## Notify When a Specific Rider Takes the Lead
+
+```yaml
+alias: TDF - Alert when Pogacar takes GC lead
+description: Send notification when Tadej Pogacar becomes GC leader
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_gc_leader
+    to: "POGAČAR Tadej"
+action:
+  - service: notify.mobile_app_phone
+    data:
+      title: "🟡 Tour de France Alert"
+      message: "Pogacar takes the yellow jersey!"
+mode: single
+```
+
+## Daily Race Status Update
+
+```yaml
+alias: Daily Grand Tour Summary
+description: Send a daily summary of all three Grand Tours
+trigger:
+  - platform: time
+    at: "10:00:00"
+condition:
+  - condition: or
+    conditions:
+      - condition: state
+        entity_id: sensor.tour_de_france_race_status
+        state: "Live (Stage*"
+      - condition: state
+        entity_id: sensor.giro_d_italia_race_status
+        state: "Live (Stage*"
+      - condition: state
+        entity_id: sensor.vuelta_a_espana_race_status
+        state: "Live (Stage*"
+action:
+  - service: notify.mobile_app_phone
+    data:
+      title: "🚴 Grand Tours Daily Update"
+      message: >
+        **Tour de France:** {{ states('sensor.tour_de_france_race_status') }}
+        Leader: {{ states('sensor.tour_de_france_gc_leader') }}
+
+        **Giro d'Italia:** {{ states('sensor.giro_d_italia_race_status') }}
+        Leader: {{ states('sensor.giro_d_italia_gc_leader') }}
+
+        **Vuelta a España:** {{ states('sensor.vuelta_a_espana_race_status') }}
+        Leader: {{ states('sensor.vuelta_a_espana_gc_leader') }}
+mode: single
+```
+
+## Alert on New Stage Winner
+
+```yaml
+alias: TDF - New Stage Winner Alert
+description: Notify when a new stage winner is recorded
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_last_stage_winner
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.to_state.state not in ['–', 'unavailable', 'unknown'] }}
+action:
+  - service: notify.mobile_app_phone
+    data:
+      title: "🏆 Tour de France Stage Winner"
+      message: "{{ trigger.to_state.state }}"
+mode: single
+```
+
+## Turn on Lights When Race is Live
+
+```yaml
+alias: Race Time - Ambient Lighting
+description: Set mood lighting when a Grand Tour stage is live
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_race_status
+    to: "Live*"
+  - platform: state
+    entity_id: sensor.giro_d_italia_race_status
+    to: "Live*"
+  - platform: state
+    entity_id: sensor.vuelta_a_espana_race_status
+    to: "Live*"
+action:
+  - service: light.turn_on
+    target:
+      entity_id: light.living_room
+    data:
+      brightness_pct: 100
+      color_name: "yellow"  # TDF color
+mode: single
+```
+
+## Create Scene for Each Race
+
+```yaml
+# Using automations, trigger scene activation based on race
+alias: Activate TDF Scene
+description: Switch to Tour de France scene when race goes live
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_race_status
+    to: "Live*"
+action:
+  - service: scene.turn_on
+    target:
+      entity_id: scene.tdf_watching
+mode: single
+```
+
+Scene definition (in `scenes.yaml`):
+```yaml
+- id: tdf_watching
+  name: TDF Watching
+  entities:
+    light.living_room:
+      state: true
+      brightness: 100
+      color_name: yellow
+    climate.living_room:
+      temperature: 20
+      hvac_mode: cool
+    media_player.tv:
+      state: true
+      app_id: com.eurosport.player  # or your TV app
+```
+
+## Log Race Data to Database
+
+If you use MariaDB or InfluxDB integration, sensor state changes are automatically logged.
+
+For custom recording:
+
+```yaml
+alias: Log TDF GC Progress
+description: Record GC leader changes to a file or database
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_gc_leader
+action:
+  - service: logbook.log
+    data:
+      name: "TDF GC Changes"
+      message: >
+        GC Leader: {{ states('sensor.tour_de_france_gc_leader') }}
+        Gap: {{ state_attr('sensor.tour_de_france_gc_leader', 'leader_gap') }}
+        Team: {{ state_attr('sensor.tour_de_france_gc_leader', 'leader_team') }}
+mode: single
+```
+
+## Create a TTS (Text-to-Speech) Announcement
+
+```yaml
+alias: TDF Stage Announcement
+description: Announce new stage winners via TTS
+trigger:
+  - platform: state
+    entity_id: sensor.tour_de_france_last_stage_winner
+action:
+  - service: tts.google_translate_say
+    target:
+      entity_id: media_player.living_room_speaker
+    data:
+      message: >
+        {{ states('sensor.tour_de_france_last_stage_winner') }}
+        wins the stage at the Tour de France.
+      language: en
+mode: single
+```
+
+---
+
+## Tips for Automations
+
+1. **Use `state_changed` triggers** for real-time alerts on changes
+2. **Use `time` triggers** for daily/weekly summaries
+3. **Template conditions** let you check multiple races at once
+4. **State attributes** (accessed via `state_attr()`) contain rich data like gaps, teams, standings
+5. **Combine with presence detection** to notify only when someone's home
+
+---
+
+## Testing Automations
+
+In Home Assistant developer tools:
+
+1. Go to **Developer Tools → States**
+2. Find your sensor entity
+3. Click it and change the state manually
+4. Your automation will trigger as if the real value changed
+
+This is great for testing without waiting for the next update cycle!

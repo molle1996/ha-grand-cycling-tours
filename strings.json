@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Grand Cycling Tours",
+        "description": "Track Tour de France, Giro d'Italia and Vuelta a España live in Home Assistant.",
+        "data": {
+          "races": "Races to track",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to data source",
+      "unknown": "Unexpected error",
+      "no_races_selected": "Please select at least one race"
+    },
+    "abort": {
+      "already_configured": "Grand Cycling Tours is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Grand Cycling Tours Options",
+        "data": {
+          "races": "Races to track",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    }
+  }
+}
