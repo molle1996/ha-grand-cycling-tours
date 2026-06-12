@@ -3,11 +3,11 @@ Scraper for ProcyclingStats.com — fetches Grand Tour data.
 
 Data is scraped from public HTML pages (no API key required).
 Scraped fields:
-  - Race status (not started / live / finished)
+  - Race status (not started / live / finished) — date-based
   - Current / next stage info
   - GC top 10
   - Stage winner
-  - Points / KOM / Youth jersey leaders
+  - Points / KOM / Youth jersey leaders (race-specific, section-isolated)
 """
 
 from __future__ import annotations
@@ -18,43 +18,40 @@ from datetime import date
 from typing import Any
 
 import aiohttp
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 _LOGGER = logging.getLogger(__name__)
 
 PCS_BASE = "https://www.procyclingstats.com"
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; HomeAssistant/GrandCyclingTours/1.0)"
-    )
+    "User-Agent": "Mozilla/5.0 (compatible; HomeAssistant/GrandCyclingTours/1.0)"
 }
 
-# Per-race jersey classification keywords on PCS
-RACE_JERSEY_KEYS = {
+# ---------------------------------------------------------------------------
+# Per-race jersey section headings on PCS (used to isolate the right section)
+# ---------------------------------------------------------------------------
+RACE_JERSEY_HEADINGS = {
     "tour-de-france": {
-        "points":   ["points classification", "green jersey", "points"],
-        "mountain": ["mountain classification", "polka dot", "king of the mountains", "mountain"],
-        "youth":    ["young rider", "white jersey", "youth classification"],
+        "points":   ["points classification", "green jersey"],
+        "mountain": ["mountain classification", "king of the mountains", "polka dot"],
+        "youth":    ["young rider classification", "white jersey"],
     },
     "giro-d-italia": {
-        "points":   ["points classification", "maglia ciclamino", "cyclamen jersey", "points"],
-        "mountain": ["mountain classification", "maglia azzurra", "mountains", "mountain"],
-        "youth":    ["young rider", "maglia bianca", "white jersey", "youth"],
+        "points":   ["points classification", "maglia ciclamino", "cyclamen"],
+        "mountain": ["mountain classification", "maglia azzurra"],
+        "youth":    ["young rider classification", "maglia bianca", "white jersey"],
     },
     "vuelta-a-espana": {
-        "points":   ["points classification", "green jersey", "maillot verde", "points"],
-        "mountain": ["mountain classification", "maillot de lunares", "mountains", "mountain"],
-        "youth":    ["young rider", "maillot blanco", "white jersey", "youth"],
+        "points":   ["points classification", "maillot verde", "green jersey"],
+        "mountain": ["mountain classification", "maillot de lunares"],
+        "youth":    ["young rider classification", "maillot blanco", "white jersey"],
     },
 }
 
-# Fallback generic keywords
-GENERIC_JERSEY_KEYS = {
-    "points":   ["points", "green", "cyclamen", "rojo", "verde"],
-    "mountain": ["mountain", "polka", "azzurra", "lunares", "kom"],
-    "youth":    ["youth", "white", "young", "bianca", "blanco"],
-}
 
+# ---------------------------------------------------------------------------
+# HTTP helper
+# ---------------------------------------------------------------------------
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str | None:
     """Fetch raw HTML from a URL."""
@@ -75,62 +72,66 @@ def _text(el) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Race overview page
+# Main entry point
 # ---------------------------------------------------------------------------
 
 async def get_race_data(
     session: aiohttp.ClientSession, race_slug: str, year: int
 ) -> dict[str, Any]:
-    """
-    Fetch and parse the main race page.
-    Returns a dict with stage list, GC standings, jersey leaders, status.
-    """
+    """Fetch and parse the main race page."""
     url = f"{PCS_BASE}/race/{race_slug}/{year}"
     html = await fetch_html(session, url)
     if not html:
         return {}
 
     soup = BeautifulSoup(html, "html.parser")
-    data: dict[str, Any] = {
-        "race_slug": race_slug,
-        "year": year,
-        "url": url,
-    }
+    data: dict[str, Any] = {"race_slug": race_slug, "year": year, "url": url}
 
-    # --- Race title ---
+    # Race title
     title_el = soup.find("h1")
     data["race_name"] = _text(title_el)
 
-    # --- Race dates ---
+    # Race dates string
     date_el = soup.find("div", class_="date") or soup.find("span", class_="date")
     data["race_dates"] = _text(date_el)
 
-    # --- Stage list ---
+    # Parse race start/end dates from the page for accurate status
+    race_start, race_end = _parse_race_dates(soup, data["race_dates"])
+    data["race_start"] = race_start.isoformat() if race_start else ""
+    data["race_end"] = race_end.isoformat() if race_end else ""
+
+    # Stage list
     stages = _parse_stages(soup)
     data["stages"] = stages
     data["total_stages"] = len(stages)
 
-    # --- Determine race status ---
+    # Status based on dates (more reliable than winner detection)
     today = date.today()
-    status, current_stage, next_stage = _determine_status(stages, today)
+    status, current_stage, next_stage = _determine_status(
+        stages, today, race_start, race_end
+    )
     data["status"] = status
     data["current_stage"] = current_stage
     data["next_stage"] = next_stage
 
-    # --- GC standings ---
-    gc = _parse_gc(soup)
+    # GC standings — only meaningful if race has started
+    if status in ("live", "finished"):
+        gc = _parse_gc(soup)
+    else:
+        gc = []
     data["gc"] = gc
     data["gc_leader"] = gc[0] if gc else {}
 
-    # --- Jersey leaders ---
-    data["jerseys"] = _parse_jerseys(soup, race_slug)
+    # Jersey leaders — only meaningful if race has started
+    if status in ("live", "finished"):
+        data["jerseys"] = _parse_jerseys(soup, race_slug)
+    else:
+        data["jerseys"] = {"points": "", "mountain": "", "youth": ""}
 
-    # --- Last completed stage winner ---
-    # First try from stage list, then fall back to fetching the stage page
+    # Last completed stage winner
     last_stage = _last_completed_stage(stages)
     if last_stage:
         winner = last_stage.get("winner", "")
-        # If stage list didn't capture winner, try fetching the stage page
         if not winner and last_stage.get("url"):
             stage_data = await get_live_stage_data(session, last_stage["url"])
             winner = stage_data.get("winner", "")
@@ -146,116 +147,99 @@ async def get_race_data(
 
 
 # ---------------------------------------------------------------------------
-# Stage list parsing
+# Race date parsing
 # ---------------------------------------------------------------------------
 
-def _parse_stages(soup: BeautifulSoup) -> list[dict]:
-    """Parse the stage list table from PCS race page."""
-    stages = []
+def _parse_race_dates(soup: BeautifulSoup, dates_str: str) -> tuple[date | None, date | None]:
+    """
+    Parse the race start and end dates.
+    PCS typically shows dates like "04.07 - 27.07 2026" or "04.07 – 27.07"
+    """
+    year = date.today().year
 
-    # PCS wraps stage tables in various ways — try multiple selectors
-    table = (
-        soup.find("table", class_=re.compile(r"basic"))
-        or _find_stage_table(soup)
+    # Try to extract from the dates string
+    # Pattern: DD.MM - DD.MM or DD.MM – DD.MM (with optional year)
+    m = re.search(
+        r"(\d{1,2})\.(\d{2})\s*[-–]\s*(\d{1,2})\.(\d{2})(?:\s+(\d{4}))?",
+        dates_str
     )
-    if not table:
-        return stages
+    if m:
+        try:
+            yr = int(m.group(5)) if m.group(5) else year
+            start = date(yr, int(m.group(2)), int(m.group(1)))
+            end = date(yr, int(m.group(4)), int(m.group(3)))
+            return start, end
+        except ValueError:
+            pass
 
-    rows = table.find_all("tr")
-    for row in rows[1:]:  # skip header row
-        cols = row.find_all("td")
-        if len(cols) < 3:
-            continue
-
-        stage: dict[str, Any] = {}
-
-        # Stage number — first column
-        num_el = cols[0].find("a") or cols[0]
-        stage["stage_number"] = _text(num_el)
-
-        # Date — find column matching DD.MM pattern
-        date_col = next(
-            (_text(c) for c in cols if re.match(r"\d{1,2}\.\d{2}", _text(c))),
-            ""
+    # Fallback: look for date elements on the page
+    for el in soup.find_all(["span", "div"], class_=re.compile(r"date|period", re.I)):
+        txt = _text(el)
+        m = re.search(
+            r"(\d{1,2})\.(\d{2})\s*[-–]\s*(\d{1,2})\.(\d{2})",
+            txt
         )
-        stage["date_str"] = date_col
-        stage["date"] = _parse_stage_date(date_col)
-
-        # Stage name / route — second-to-last column
-        name_col = cols[-2] if len(cols) > 3 else cols[1]
-        stage["name"] = _text(name_col)
-
-        # Winner — last column, look for rider link first
-        winner_col = cols[-1]
-        winner_link = winner_col.find("a", href=re.compile(r"rider/"))
-        if not winner_link:
-            winner_link = winner_col.find("a")
-        stage["winner"] = _text(winner_link) if winner_link else ""
-        stage["completed"] = bool(stage["winner"])
-
-        # Stage URL
-        link = cols[0].find("a")
-        stage["url"] = (
-            PCS_BASE + "/" + link["href"].lstrip("/")
-            if link and link.get("href")
-            else ""
-        )
-
-        stages.append(stage)
-
-    return stages
-
-
-def _find_stage_table(soup: BeautifulSoup):
-    """Try to find the stage table by alternate means."""
-    # Look inside common wrapper divs
-    for wrapper_class in ["mt10", "mt20", "race-info", "content"]:
-        div = soup.find("div", class_=wrapper_class)
-        if div:
-            tbl = div.find("table")
-            if tbl:
-                return tbl
-
-    # Last resort: any table with stage-like headers
-    for table in soup.find_all("table"):
-        headers = [_text(th).lower() for th in table.find_all("th")]
-        if any(h in headers for h in ["stage", "date", "winner", "distance"]):
-            return table
-
-    return None
-
-
-def _parse_stage_date(date_str: str | None) -> date | None:
-    """Parse DD.MM date string from PCS."""
-    if not date_str:
-        return None
-    try:
-        m = re.match(r"(\d{1,2})\.(\d{1,2})", date_str)
         if m:
-            day, month = int(m.group(1)), int(m.group(2))
-            return date(date.today().year, month, day)
-    except (ValueError, AttributeError):
-        pass
-    return None
+            try:
+                start = date(year, int(m.group(2)), int(m.group(1)))
+                end = date(year, int(m.group(4)), int(m.group(3)))
+                return start, end
+            except ValueError:
+                pass
 
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Status determination — date-based
+# ---------------------------------------------------------------------------
 
 def _determine_status(
-    stages: list[dict], today: date
+    stages: list[dict],
+    today: date,
+    race_start: date | None,
+    race_end: date | None,
 ) -> tuple[str, dict, dict]:
-    """Return (status, last_completed_stage, next_stage)."""
-    if not stages:
-        return "unknown", {}, {}
+    """
+    Determine race status using dates first, then fall back to winner detection.
+    Returns (status, current_or_last_stage, next_stage).
+    """
+    # --- Date-based determination (most reliable) ---
+    if race_start and race_end:
+        if today < race_start:
+            # Not started — next stage is the first stage
+            first = stages[0] if stages else {}
+            return "not_started", {}, first
+        if today > race_end:
+            # Finished — show last stage
+            last = stages[-1] if stages else {}
+            return "finished", last, {}
+        # Race is live — find today's or most recent stage
+        return _live_status_from_stages(stages, today)
 
+    # --- Fallback: winner-based detection ---
     completed = [s for s in stages if s.get("completed")]
     upcoming = [s for s in stages if not s.get("completed")]
 
-    if not completed and not upcoming:
+    if not stages:
         return "unknown", {}, {}
     if not completed:
-        return "not_started", {}, upcoming[0]
+        return "not_started", {}, stages[0]
     if not upcoming:
         return "finished", completed[-1], {}
     return "live", completed[-1], upcoming[0]
+
+
+def _live_status_from_stages(
+    stages: list[dict], today: date
+) -> tuple[str, dict, dict]:
+    """Find current and next stage during a live race."""
+    completed = [s for s in stages if s.get("completed")]
+    upcoming = [s for s in stages if not s.get("completed")]
+
+    current = completed[-1] if completed else {}
+    nxt = upcoming[0] if upcoming else {}
+    return "live", current, nxt
 
 
 def _last_completed_stage(stages: list[dict]) -> dict | None:
@@ -264,26 +248,100 @@ def _last_completed_stage(stages: list[dict]) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Stage list parsing
+# ---------------------------------------------------------------------------
+
+def _parse_stages(soup: BeautifulSoup) -> list[dict]:
+    """Parse the stage list table from PCS race page."""
+    stages = []
+    table = soup.find("table", class_=re.compile(r"basic")) or _find_stage_table(soup)
+    if not table:
+        return stages
+
+    for row in table.find_all("tr")[1:]:  # skip header
+        cols = row.find_all("td")
+        if len(cols) < 3:
+            continue
+
+        stage: dict[str, Any] = {}
+
+        # Stage number
+        num_el = cols[0].find("a") or cols[0]
+        stage["stage_number"] = _text(num_el)
+
+        # Date
+        date_col = next(
+            (_text(c) for c in cols if re.match(r"\d{1,2}\.\d{2}", _text(c))), ""
+        )
+        stage["date_str"] = date_col
+        stage["date"] = _parse_stage_date(date_col)
+
+        # Stage name
+        name_col = cols[-2] if len(cols) > 3 else cols[1]
+        stage["name"] = _text(name_col)
+
+        # Winner
+        winner_col = cols[-1]
+        winner_link = winner_col.find("a", href=re.compile(r"rider/")) or winner_col.find("a")
+        stage["winner"] = _text(winner_link) if winner_link else ""
+        stage["completed"] = bool(stage["winner"])
+
+        # Stage URL
+        link = cols[0].find("a")
+        stage["url"] = (
+            PCS_BASE + "/" + link["href"].lstrip("/")
+            if link and link.get("href") else ""
+        )
+
+        stages.append(stage)
+
+    return stages
+
+
+def _find_stage_table(soup: BeautifulSoup) -> Tag | None:
+    for cls in ["mt10", "mt20", "race-info", "content"]:
+        div = soup.find("div", class_=cls)
+        if div:
+            tbl = div.find("table")
+            if tbl:
+                return tbl
+    for table in soup.find_all("table"):
+        headers = [_text(th).lower() for th in table.find_all("th")]
+        if any(h in headers for h in ["stage", "date", "winner", "distance"]):
+            return table
+    return None
+
+
+def _parse_stage_date(date_str: str | None) -> date | None:
+    if not date_str:
+        return None
+    try:
+        m = re.match(r"(\d{1,2})\.(\d{1,2})", date_str)
+        if m:
+            return date(date.today().year, int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # GC standings
 # ---------------------------------------------------------------------------
 
 def _parse_gc(soup: BeautifulSoup) -> list[dict]:
-    """Parse the General Classification standings table."""
+    """Parse GC top 10."""
     gc = []
-
     table = _find_gc_table(soup)
     if not table:
         return gc
 
-    rows = table.find_all("tr")
-    for i, row in enumerate(rows[1:11]):  # top 10
+    for i, row in enumerate(table.find_all("tr")[1:11]):
         cols = row.find_all("td")
         if len(cols) < 3:
             continue
 
         rider: dict[str, Any] = {"rank": i + 1}
 
-        # Rider name — prefer link with /rider/ in href
         for col in cols:
             link = col.find("a", href=re.compile(r"rider/"))
             if link:
@@ -292,7 +350,6 @@ def _parse_gc(soup: BeautifulSoup) -> list[dict]:
         if "name" not in rider:
             rider["name"] = _text(cols[1]) if len(cols) > 1 else ""
 
-        # Team — prefer link with /team/ in href
         for col in cols:
             link = col.find("a", href=re.compile(r"team/"))
             if link:
@@ -301,7 +358,6 @@ def _parse_gc(soup: BeautifulSoup) -> list[dict]:
         if "team" not in rider:
             rider["team"] = ""
 
-        # Time gap — last column
         rider["gap"] = _text(cols[-1]) or "0:00"
 
         if rider.get("name"):
@@ -310,8 +366,7 @@ def _parse_gc(soup: BeautifulSoup) -> list[dict]:
     return gc
 
 
-def _find_gc_table(soup: BeautifulSoup):
-    """Find the GC table using multiple strategies."""
+def _find_gc_table(soup: BeautifulSoup) -> Tag | None:
     # Strategy 1: explicit id
     div = soup.find("div", id="general-classification")
     if div:
@@ -319,23 +374,22 @@ def _find_gc_table(soup: BeautifulSoup):
         if tbl:
             return tbl
 
-    # Strategy 2: heading followed by table
+    # Strategy 2: heading + sibling
     for tag in ["h3", "h4", "h2"]:
         for header in soup.find_all(tag):
-            txt = _text(header).lower()
-            if "general classification" in txt or "overall" in txt:
-                sibling = header.find_next_sibling(["table", "div"])
-                if sibling:
-                    return sibling if sibling.name == "table" else sibling.find("table")
+            if "general classification" in _text(header).lower():
+                sib = header.find_next_sibling(["table", "div"])
+                if sib:
+                    return sib if sib.name == "table" else sib.find("table")
 
-    # Strategy 3: table with time/gap columns
+    # Strategy 3: table with time/gap headers
     for table in soup.find_all("table"):
         headers = [_text(th).lower() for th in table.find_all("th")]
         if any(h in headers for h in ["time", "gap", "+"]):
             return table
 
-    # Strategy 4: div with class containing 'gc' or 'general'
-    for div in soup.find_all("div", class_=re.compile(r"gc|general", re.I)):
+    # Strategy 4: div class
+    for div in soup.find_all("div", class_=re.compile(r"\bgc\b|general", re.I)):
         tbl = div.find("table")
         if tbl:
             return tbl
@@ -344,59 +398,71 @@ def _find_gc_table(soup: BeautifulSoup):
 
 
 # ---------------------------------------------------------------------------
-# Jersey leaders
+# Jersey leaders — isolated per section to avoid cross-contamination
 # ---------------------------------------------------------------------------
 
 def _parse_jerseys(soup: BeautifulSoup, race_slug: str) -> dict[str, str]:
     """
-    Parse jersey leaders. Uses race-specific keywords first,
-    then falls back to generic keywords.
+    Parse jersey leaders by finding the dedicated classification section
+    for each jersey type and extracting only the leader from that section.
+    This prevents the same rider appearing in all jerseys.
     """
     jerseys: dict[str, str] = {"points": "", "mountain": "", "youth": ""}
-    keys = RACE_JERSEY_KEYS.get(race_slug, GENERIC_JERSEY_KEYS)
+    headings = RACE_JERSEY_HEADINGS.get(race_slug, {})
 
-    # Strategy 1: dedicated classification divs/sections
-    for section in soup.find_all(
-        ["div", "li", "tr"], class_=re.compile(r"leader|jersey|classif|ranking", re.I)
-    ):
-        _match_jersey(section, jerseys, keys)
-
-    # Strategy 2: scan all headings and their following sibling content
-    if not all(jerseys.values()):
-        for tag in ["h3", "h4", "h2", "h5"]:
-            for header in soup.find_all(tag):
-                header_text = _text(header).lower()
-                for jersey_type, kw_list in keys.items():
-                    if jerseys[jersey_type]:
-                        continue
-                    if any(kw in header_text for kw in kw_list):
-                        # Look for a rider link near this heading
-                        sibling = header.find_next_sibling(["div", "ul", "table", "p"])
-                        if sibling:
-                            link = sibling.find("a", href=re.compile(r"rider/"))
-                            if link:
-                                jerseys[jersey_type] = _text(link)
-
-    # Strategy 3: scan entire page text for classification blocks
-    if not all(jerseys.values()):
-        for div in soup.find_all("div"):
-            _match_jersey(div, jerseys, keys)
+    for jersey_type, kw_list in headings.items():
+        leader = _find_jersey_leader_in_section(soup, kw_list)
+        if leader:
+            jerseys[jersey_type] = leader
 
     return jerseys
 
 
-def _match_jersey(
-    element, jerseys: dict[str, str], keys: dict[str, list[str]]
-) -> None:
-    """Try to match a jersey leader from an HTML element."""
-    text = _text(element).lower()
-    for jersey_type, kw_list in keys.items():
-        if jerseys[jersey_type]:
-            continue
-        if any(kw in text for kw in kw_list):
-            link = element.find("a", href=re.compile(r"rider/"))
+def _find_jersey_leader_in_section(
+    soup: BeautifulSoup, heading_keywords: list[str]
+) -> str:
+    """
+    Find the leader of a specific classification by:
+    1. Locating the section heading that matches one of the keywords
+    2. Looking for the first rider link within that specific section only
+    3. NOT scanning the whole page (avoids cross-contamination)
+    """
+    for tag in ["h3", "h4", "h2", "h5"]:
+        for header in soup.find_all(tag):
+            header_text = _text(header).lower()
+            if not any(kw in header_text for kw in heading_keywords):
+                continue
+
+            # Found a matching heading — search the next sibling block only
+            sibling = header.find_next_sibling(["div", "ul", "table", "ol"])
+            if not sibling:
+                continue
+
+            # Get the first rider link in this section
+            link = sibling.find("a", href=re.compile(r"rider/"))
             if link:
-                jerseys[jersey_type] = _text(link)
+                return _text(link)
+
+            # Sometimes the rider is in the first table row
+            row = sibling.find("tr")
+            if row:
+                link = row.find("a", href=re.compile(r"rider/"))
+                if link:
+                    return _text(link)
+
+    # Fallback: look for dedicated classification divs by id or class
+    for kw in heading_keywords:
+        slug = kw.replace(" ", "-")
+        div = (
+            soup.find("div", id=re.compile(slug, re.I))
+            or soup.find("div", class_=re.compile(slug, re.I))
+        )
+        if div:
+            link = div.find("a", href=re.compile(r"rider/"))
+            if link:
+                return _text(link)
+
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -406,10 +472,7 @@ def _match_jersey(
 async def get_live_stage_data(
     session: aiohttp.ClientSession, stage_url: str
 ) -> dict[str, Any]:
-    """
-    Fetch a single stage page for live / result data.
-    Returns winner, stage type, distance, elevation.
-    """
+    """Fetch a single stage page for result data."""
     if not stage_url:
         return {}
 
@@ -438,7 +501,7 @@ async def get_live_stage_data(
             data["elevation_m"] = m.group(1)
             break
 
-    # Winner — first row of result table
+    # Winner — first result row
     result_table = soup.find("table", class_=re.compile(r"result|basic"))
     if result_table:
         for row in result_table.find_all("tr")[1:2]:
