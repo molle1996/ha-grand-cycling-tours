@@ -85,6 +85,22 @@ async def get_race_data(
     stats_html = await fetch_html(session, stats_url)
     stats_info = _parse_statistics_page(stats_html, year) if stats_html else {}
 
+    # --- If no last winner info on /statistics, try /race/<slug> overview ---
+    if not stats_info.get("current_year_winner"):
+        overview_url = f"{PCS_BASE}/race/{race_slug}"
+        overview_html = await fetch_html(session, overview_url)
+        if overview_html:
+            overview_info = _parse_statistics_page(overview_html, year)
+            # Merge any additional winner data found
+            for yr, name in overview_info.get("last_winners", {}).items():
+                stats_info.setdefault("last_winners", {})[yr] = name
+            if overview_info.get("current_year_winner"):
+                stats_info["current_year_winner"] = overview_info["current_year_winner"]
+            if overview_info.get("days_until_start") and not stats_info.get("days_until_start"):
+                stats_info["days_until_start"] = overview_info["days_until_start"]
+            if overview_info.get("next_race_date") and not stats_info.get("next_race_date"):
+                stats_info["next_race_date"] = overview_info["next_race_date"]
+
     # --- Fetch the year-specific race page ---
     url = f"{PCS_BASE}/race/{race_slug}/{year}"
     html = await fetch_html(session, url)
@@ -224,6 +240,20 @@ def _parse_statistics_page(html: str, year: int) -> dict[str, Any]:
             month = _month_name_to_num(month_name)
             if month:
                 result["next_race_date"] = date(yr, month, day)
+        except ValueError:
+            pass
+
+    # --- "The last winner is [Name] in YYYY." — strongest signal ---
+    last_winner_match = re.search(
+        r"[Tt]he\s+last\s+winner\s+is\s+([A-Za-zÀ-ÿ'.\-\s]+?)\s+in\s+(\d{4})",
+        page_text,
+    )
+    if last_winner_match:
+        try:
+            winner_name = last_winner_match.group(1).strip().rstrip(".,;")
+            winner_year = int(last_winner_match.group(2))
+            if winner_name and winner_year:
+                result["last_winners"][winner_year] = winner_name
         except ValueError:
             pass
 
