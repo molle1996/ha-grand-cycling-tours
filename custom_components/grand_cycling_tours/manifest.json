@@ -1,7 +1,7 @@
 {
   "domain": "grand_cycling_tours",
   "name": "Grand Cycling Tours",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "documentation": "https://github.com/molle1996/ha-grand-cycling-tours",
   "issue_tracker": "https://github.com/molle1996/ha-grand-cycling-tours/issues",
   "dependencies": [],
