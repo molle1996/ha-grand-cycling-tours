@@ -144,7 +144,9 @@ async def get_race_data(
 
     # --- Status: statistics page is authoritative ---
     today = date.today()
-    status = _determine_status_from_stats(stats_info, year, today, race_start, race_end)
+    status = _determine_status_from_stats(
+        stats_info, year, today, race_start, race_end, stages
+    )
 
     # Set current/next stage based on resolved status
     if status == "not_started":
@@ -300,12 +302,16 @@ def _determine_status_from_stats(
     today: date,
     race_start: date | None,
     race_end: date | None,
+    stages: list[dict] | None = None,
 ) -> str:
     """
-    Determine race status using statistics page info first.
-    Falls back to date-based logic.
+    Determine race status using multiple signals in order of reliability.
     """
-    # 1. Statistics page explicitly says race is upcoming
+    stages = stages or []
+    completed_count = sum(1 for s in stages if s.get("completed"))
+    total_count = len(stages)
+
+    # 1. Statistics page explicitly says race is upcoming (only trust if > 0)
     days_until = stats_info.get("days_until_start")
     if days_until is not None and days_until > 0:
         return "not_started"
@@ -314,7 +320,15 @@ def _determine_status_from_stats(
     if stats_info.get("current_year_winner"):
         return "finished"
 
-    # 3. Date-based fallback
+    # 3. All stages have winners → finished
+    if total_count > 0 and completed_count == total_count:
+        return "finished"
+
+    # 4. Some (but not all) stages have winners → live
+    if completed_count > 0:
+        return "live"
+
+    # 5. Date-based fallback: today falls within race window → live
     if race_start and race_end:
         if today < race_start:
             return "not_started"
@@ -322,11 +336,10 @@ def _determine_status_from_stats(
             return "finished"
         return "live"
 
-    # 4. If we know the start date but no end — derive
+    # 6. Only start date known
     if race_start:
         if today < race_start:
             return "not_started"
-        # Assume Grand Tour is 3 weeks long
         from datetime import timedelta
         if today > race_start + timedelta(days=24):
             return "finished"
